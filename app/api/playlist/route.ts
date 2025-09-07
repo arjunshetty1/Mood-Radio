@@ -140,13 +140,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Vibe is required" }, { status: 400 })
     }
 
-    // Step 1: Map vibe to genres using AI
-    const genres = await mapVibeToGenres(vibe)
-    console.log("[v0] Mapped genres:", genres)
+  // Step 1: Map vibe to genres using AI
+  const genres = await mapVibeToGenres(vibe)
+  console.log("[v0] Mapped genres:", genres)
 
-    // Step 2: Get Spotify recommendations
-    const tracks = await getSpotifyRecommendations(genres, vibe)
-    console.log("[v0] Found tracks:", tracks.length)
+  // Step 2: Log before sending request to Spotify
+  console.log("[v0] Sending request to Spotify with genres:", genres, "and vibe:", vibe)
+  const tracks = await getSpotifyRecommendations(genres, vibe)
+  console.log("[v0] Found tracks:", tracks.length)
 
     return NextResponse.json({
       tracks: tracks.slice(0, 10), // Return top 10 tracks

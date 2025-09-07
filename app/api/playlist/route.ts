@@ -22,24 +22,32 @@ async function getSpotifyToken(): Promise<string> {
     throw new Error("Spotify credentials not configured")
   }
 
-  const response = await fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
-    },
-    body: "grant_type=client_credentials",
-  })
+  try {
+    const response = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      },
+      body: "grant_type=client_credentials",
+    })
 
-  if (!response.ok) {
-    throw new Error("Failed to get Spotify token")
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error("[v0] Spotify token error:", response.status, errorText)
+      throw new Error(`Failed to get Spotify token: ${response.status} ${errorText}`)
+    }
+
+    const data = await response.json()
+    accessToken = data.access_token
+    tokenExpiry = Date.now() + (data.expires_in - 60) * 1000 // Subtract 60s buffer
+
+    console.log("[v0] Spotify token obtained successfully")
+    return accessToken
+  } catch (error) {
+    console.error("[v0] Error getting Spotify token:", error)
+    throw error
   }
-
-  const data = await response.json()
-  accessToken = data.access_token
-  tokenExpiry = Date.now() + data.expires_in * 1000
-
-  return accessToken
 }
 
 async function mapVibeToGenres(vibe: string): Promise<string[]> {
@@ -51,16 +59,20 @@ rock, pop, jazz, classical, metal, hip-hop, electronic, indie, blues, folk, soul
 Consider the mood, energy level, and context. Return only the genre names separated by commas, no explanations.`
 
   try {
-      const { text } = await generateText({
-        model: groq("llama-3.3-70b-versatile"),
-        prompt,
-      })
+    const { text } = await generateText({
+      model: groq("llama-3.3-70b-versatile"),
+      prompt,
+    })
 
-    return text
+    const genres = text
       .trim()
       .split(",")
       .map((g) => g.trim())
+      .filter(g => g.length > 0)
       .slice(0, 5)
+    
+    console.log("[v0] AI mapped genres:", genres)
+    return genres.length > 0 ? genres : ["pop", "indie", "alternative"] // Ensure we have genres
   } catch (error) {
     console.error("AI genre mapping failed:", error)
     // Fallback genres based on common vibes
@@ -74,116 +86,214 @@ Consider the mood, energy level, and context. Return only the genre names separa
   }
 }
 
+// Validate Spotify genres against their available seed genres
+const VALID_SPOTIFY_GENRES = [
+  'acoustic', 'afrobeat', 'alt-rock', 'alternative', 'ambient', 'ancient', 
+  'arabic', 'blues', 'bossanova', 'brazil', 'breakbeat', 'british', 
+  'chill', 'classical', 'club', 'country', 'dance', 'deep-house', 
+  'disco', 'drum-and-bass', 'dub', 'dubstep', 'electronic', 'folk', 
+  'funk', 'garage', 'gospel', 'groove', 'grunge', 'hip-hop', 'house', 
+  'indie', 'jazz', 'latin', 'metal', 'pop', 'punk', 'r-n-b', 'reggae', 
+  'rock', 'soul', 'techno', 'world-music'
+]
+
+function validateAndFixGenres(genres: string[]): string[] {
+  const validGenres = genres
+    .map(genre => {
+      const normalized = genre.toLowerCase().trim()
+      // Handle common mappings
+      if (normalized === 'rnb' || normalized === 'r&b') return 'r-n-b'
+      if (normalized === 'hiphop' || normalized === 'hip hop') return 'hip-hop'
+      if (normalized === 'edm') return 'electronic'
+      return normalized
+    })
+    .filter(genre => VALID_SPOTIFY_GENRES.includes(genre))
+
+  // Ensure we have at least one valid genre
+  if (validGenres.length === 0) {
+    return ['pop']
+  }
+
+  return validGenres.slice(0, 5) // Spotify allows max 5 seed genres
+}
+
 async function getSpotifyRecommendations(genres: string[], vibe: string) {
   const token = await getSpotifyToken()
 
-  // Map vibe to audio features
+  // Validate genres first
+  const validGenres = validateAndFixGenres(genres)
+  console.log("[v0] Valid genres for Spotify:", validGenres)
+
+  // Map vibe to audio features (keep values in valid ranges)
   let energy = 0.5
   let valence = 0.5
   let danceability = 0.5
 
   const vibeLower = vibe.toLowerCase()
 
-  // Energy mapping
+  // Energy mapping (0.0 to 1.0)
   if (vibeLower.includes("high energy") || vibeLower.includes("workout") || vibeLower.includes("pumped")) {
     energy = 0.8
   } else if (vibeLower.includes("chill") || vibeLower.includes("relax") || vibeLower.includes("calm")) {
     energy = 0.3
   }
 
-  // Valence (happiness) mapping
+  // Valence (happiness) mapping (0.0 to 1.0)
   if (vibeLower.includes("happy") || vibeLower.includes("upbeat") || vibeLower.includes("celebration")) {
     valence = 0.8
   } else if (vibeLower.includes("sad") || vibeLower.includes("melancholy") || vibeLower.includes("nostalgic")) {
     valence = 0.2
   }
 
-  // Danceability mapping
+  // Danceability mapping (0.0 to 1.0)
   if (vibeLower.includes("dance") || vibeLower.includes("party") || vibeLower.includes("club")) {
     danceability = 0.8
   }
 
   const params = new URLSearchParams({
-    seed_genres: genres.slice(0, 5).join(","),
+    seed_genres: validGenres.join(","),
     limit: "20",
-    target_energy: energy.toString(),
-    target_valence: valence.toString(),
-    target_danceability: danceability.toString(),
+    target_energy: energy.toFixed(2),
+    target_valence: valence.toFixed(2),
+    target_danceability: danceability.toFixed(2),
   })
 
-  const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  })
+  console.log("[v0] Spotify API request URL:", `https://api.spotify.com/v1/recommendations?${params.toString()}`)
 
-  // Log response status for debugging
-  console.log("[v0] Spotify recommendations response status:", response.status)
-  let responseBody
   try {
-    responseBody = await response.text()
-    console.log("[v0] Spotify recommendations response body:", responseBody)
-  } catch (e) {
-    console.error("[v0] Could not read Spotify response body:", e)
-  }
+    const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    })
 
-  if (response.status !== 200) {
-    throw new Error("Failed to get Spotify recommendations")
-  }
+    console.log("[v0] Spotify recommendations response status:", response.status)
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error("[v0] Spotify recommendations error:", response.status, errorText)
+      throw new Error(`Spotify API error: ${response.status} - ${errorText}`)
+    }
 
-  let data
-  try {
-    data = JSON.parse(responseBody ?? "")
-  } catch (e) {
-    console.error("[v0] Could not parse Spotify response JSON:", e)
-    throw new Error("Failed to parse Spotify recommendations response")
-  }
+    const data = await response.json()
+    console.log("[v0] Spotify response data structure:", {
+      hasracks: !!data.tracks,
+      tracksLength: data.tracks?.length,
+      firstTrack: data.tracks?.[0]?.name
+    })
 
-  return data.tracks.map((track: any) => ({
-    name: track.name,
-    artist: track.artists.map((a: any) => a.name).join(", "),
-    url: track.external_urls.spotify,
-    preview_url: track.preview_url,
-    image: track.album.images[0]?.url,
-  }))
+    if (!data.tracks || data.tracks.length === 0) {
+      console.warn("[v0] No tracks returned from Spotify")
+      return []
+    }
+
+    return data.tracks.map((track: any) => ({
+      name: track.name,
+      artist: track.artists?.map((a: any) => a.name).join(", ") || "Unknown Artist",
+      url: track.external_urls?.spotify || "",
+      preview_url: track.preview_url,
+      image: track.album?.images?.[0]?.url || null,
+    }))
+  } catch (error) {
+    console.error("[v0] Error fetching Spotify recommendations:", error)
+    throw error
+  }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const { vibe } = await request.json()
+    console.log("[v0] Starting playlist generation request")
+    
+    const body = await request.json()
+    const { vibe } = body
 
-    if (!vibe || typeof vibe !== "string") {
-      return NextResponse.json({ error: "Vibe is required" }, { status: 400 })
+    console.log("[v0] Received vibe:", vibe)
+
+    if (!vibe || typeof vibe !== "string" || vibe.trim().length === 0) {
+      return NextResponse.json({ error: "Valid vibe is required" }, { status: 400 })
     }
 
-  // Step 1: Map vibe to genres using AI
-  const genres = await mapVibeToGenres(vibe)
-  console.log("[v0] Mapped genres:", genres)
+    // Check environment variables
+    if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
+      console.error("[v0] Missing Spotify credentials")
+      return NextResponse.json(
+        {
+          error: "Spotify integration not configured. Please add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET environment variables.",
+          needsSetup: true,
+        },
+        { status: 500 }
+      )
+    }
 
-  // Step 2: Log before sending request to Spotify
-  console.log("[v0] Sending request to Spotify with genres:", genres, "and vibe:", vibe)
-  const tracks = await getSpotifyRecommendations(genres, vibe)
-  console.log("[v0] Found tracks:", tracks.length)
+    if (!process.env.GROQ_API_KEY) {
+      console.error("[v0] Missing GROQ API key")
+      return NextResponse.json(
+        { error: "GROQ API key not configured" },
+        { status: 500 }
+      )
+    }
+
+    // Step 1: Map vibe to genres using AI
+    console.log("[v0] Mapping vibe to genres...")
+    const genres = await mapVibeToGenres(vibe.trim())
+    console.log("[v0] Mapped genres:", genres)
+
+    // Step 2: Get Spotify recommendations
+    console.log("[v0] Fetching Spotify recommendations...")
+    const tracks = await getSpotifyRecommendations(genres, vibe.trim())
+    console.log("[v0] Found tracks:", tracks.length)
+
+    if (tracks.length === 0) {
+      return NextResponse.json({
+        error: "No tracks found for this vibe. Try a different description.",
+        tracks: [],
+        genres,
+        vibe: vibe.trim(),
+      }, { status: 200 })
+    }
 
     return NextResponse.json({
       tracks: tracks.slice(0, 10), // Return top 10 tracks
       genres,
-      vibe,
+      vibe: vibe.trim(),
     })
   } catch (error) {
     console.error("[v0] Playlist generation error:", error)
 
-    if (error instanceof Error && error.message.includes("Spotify credentials")) {
-      return NextResponse.json(
-        {
-          error:
-            "Spotify integration not configured. Please add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET environment variables.",
-          needsSetup: true,
-        },
-        { status: 500 },
-      )
+    // More specific error handling
+    if (error instanceof Error) {
+      if (error.message.includes("Spotify credentials")) {
+        return NextResponse.json(
+          {
+            error: "Spotify integration not configured. Please add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET environment variables.",
+            needsSetup: true,
+          },
+          { status: 500 }
+        )
+      }
+      
+      if (error.message.includes("Spotify API error")) {
+        return NextResponse.json(
+          { error: `Spotify API issue: ${error.message}` },
+          { status: 500 }
+        )
+      }
+
+      if (error.message.includes("AI genre mapping failed")) {
+        return NextResponse.json(
+          { error: "AI service unavailable. Please try again later." },
+          { status: 500 }
+        )
+      }
     }
 
-    return NextResponse.json({ error: "Failed to generate playlist" }, { status: 500 })
+    return NextResponse.json(
+      { 
+        error: "Failed to generate playlist. Please try again.",
+        details: error instanceof Error ? error.message : "Unknown error"
+      }, 
+      { status: 500 }
+    )
   }
 }

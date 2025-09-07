@@ -117,54 +117,87 @@ function validateAndFixGenres(genres: string[]): string[] {
   return validGenres.slice(0, 5) // Spotify allows max 5 seed genres
 }
 
+async function getAvailableGenreSeeds(token: string): Promise<string[]> {
+  try {
+    const response = await fetch('https://api.spotify.com/v1/recommendations/available-genre-seeds', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    
+    if (response.ok) {
+      const data = await response.json()
+      console.log("[v0] Available Spotify genres:", data.genres?.slice(0, 10))
+      return data.genres || []
+    }
+  } catch (error) {
+    console.error("[v0] Failed to fetch available genres:", error)
+  }
+  
+  return VALID_SPOTIFY_GENRES // Fallback to our hardcoded list
+}
+
 async function getSpotifyRecommendations(genres: string[], vibe: string) {
   const token = await getSpotifyToken()
 
-  // Validate genres first
-  const validGenres = validateAndFixGenres(genres)
+  // Get fresh list of available genres
+  const availableGenres = await getAvailableGenreSeeds(token)
+  
+  // Validate genres against available ones
+  const validGenres = genres
+    .map(genre => {
+      const normalized = genre.toLowerCase().trim()
+      // Handle common mappings
+      if (normalized === 'rnb' || normalized === 'r&b') return 'r-n-b'
+      if (normalized === 'hiphop' || normalized === 'hip hop') return 'hip-hop'
+      if (normalized === 'edm') return 'electronic'
+      if (normalized === 'world-music') return 'world'  // Common mapping issue
+      return normalized
+    })
+    .filter(genre => availableGenres.includes(genre))
+    .slice(0, 5) // Max 5 seed genres
+
+  console.log("[v0] Original genres:", genres)
   console.log("[v0] Valid genres for Spotify:", validGenres)
 
-  // Map vibe to audio features (keep values in valid ranges)
-  let energy = 0.5
-  let valence = 0.5
-  let danceability = 0.5
-
-  const vibeLower = vibe.toLowerCase()
-
-  // Energy mapping (0.0 to 1.0)
-  if (vibeLower.includes("high energy") || vibeLower.includes("workout") || vibeLower.includes("pumped")) {
-    energy = 0.8
-  } else if (vibeLower.includes("chill") || vibeLower.includes("relax") || vibeLower.includes("calm")) {
-    energy = 0.3
+  // Ensure we have at least one valid genre
+  if (validGenres.length === 0) {
+    console.warn("[v0] No valid genres found, using fallback")
+    validGenres.push('pop') // Safe fallback
   }
 
-  // Valence (happiness) mapping (0.0 to 1.0)
-  if (vibeLower.includes("happy") || vibeLower.includes("upbeat") || vibeLower.includes("celebration")) {
-    valence = 0.8
-  } else if (vibeLower.includes("sad") || vibeLower.includes("melancholy") || vibeLower.includes("nostalgic")) {
-    valence = 0.2
-  }
-
-  // Danceability mapping (0.0 to 1.0)
-  if (vibeLower.includes("dance") || vibeLower.includes("party") || vibeLower.includes("club")) {
-    danceability = 0.8
-  }
-
+  // Simplify parameters first - start with basic request
   const params = new URLSearchParams({
     seed_genres: validGenres.join(","),
-    limit: "20",
-    target_energy: energy.toFixed(2),
-    target_valence: valence.toFixed(2),
-    target_danceability: danceability.toFixed(2),
+    limit: "20"
   })
 
-  console.log("[v0] Spotify API request URL:", `https://api.spotify.com/v1/recommendations?${params.toString()}`)
+  // Only add audio features if we have a specific vibe
+  const vibeLower = vibe.toLowerCase()
+  
+  if (vibeLower.includes("high energy") || vibeLower.includes("workout") || vibeLower.includes("pumped")) {
+    params.append('min_energy', '0.6')
+  } else if (vibeLower.includes("chill") || vibeLower.includes("relax") || vibeLower.includes("calm")) {
+    params.append('max_energy', '0.4')
+  }
+
+  if (vibeLower.includes("happy") || vibeLower.includes("upbeat")) {
+    params.append('min_valence', '0.6')
+  } else if (vibeLower.includes("sad") || vibeLower.includes("melancholy")) {
+    params.append('max_valence', '0.4')
+  }
+
+  if (vibeLower.includes("dance") || vibeLower.includes("party")) {
+    params.append('min_danceability', '0.6')
+  }
+
+  const url = `https://api.spotify.com/v1/recommendations?${params.toString()}`
+  console.log("[v0] Spotify API request URL:", url)
 
   try {
-    const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
+    const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
       },
     })
 
@@ -172,13 +205,46 @@ async function getSpotifyRecommendations(genres: string[], vibe: string) {
     
     if (!response.ok) {
       const errorText = await response.text()
-      console.error("[v0] Spotify recommendations error:", response.status, errorText)
+      console.error("[v0] Spotify recommendations error details:", {
+        status: response.status,
+        statusText: response.statusText,
+        body: errorText,
+        url: url
+      })
+      
+      // Try a simpler fallback request
+      if (response.status === 404) {
+        console.log("[v0] Trying fallback request with just 'pop' genre...")
+        const fallbackParams = new URLSearchParams({
+          seed_genres: 'pop',
+          limit: '20'
+        })
+        
+        const fallbackResponse = await fetch(`https://api.spotify.com/v1/recommendations?${fallbackParams}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+        
+        if (fallbackResponse.ok) {
+          const data = await fallbackResponse.json()
+          console.log("[v0] Fallback request successful")
+          return data.tracks.map((track: any) => ({
+            name: track.name,
+            artist: track.artists?.map((a: any) => a.name).join(", ") || "Unknown Artist",
+            url: track.external_urls?.spotify || "",
+            preview_url: track.preview_url,
+            image: track.album?.images?.[0]?.url || null,
+          }))
+        }
+      }
+      
       throw new Error(`Spotify API error: ${response.status} - ${errorText}`)
     }
 
     const data = await response.json()
     console.log("[v0] Spotify response data structure:", {
-      hasracks: !!data.tracks,
+      hasTracks: !!data.tracks,
       tracksLength: data.tracks?.length,
       firstTrack: data.tracks?.[0]?.name
     })

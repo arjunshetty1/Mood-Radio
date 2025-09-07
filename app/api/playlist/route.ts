@@ -7,7 +7,7 @@ const groq = createGroq({
 })
 
 // Spotify token management
-let accessToken: string | null = null
+let accessToken: string = ""   
 let tokenExpiry = 0
 
 async function getSpotifyToken(): Promise<string> {

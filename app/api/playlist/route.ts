@@ -117,11 +117,27 @@ async function getSpotifyRecommendations(genres: string[], vibe: string) {
     },
   })
 
-  if (!response.ok) {
+  // Log response status for debugging
+  console.log("[v0] Spotify recommendations response status:", response.status)
+  let responseBody
+  try {
+    responseBody = await response.text()
+    console.log("[v0] Spotify recommendations response body:", responseBody)
+  } catch (e) {
+    console.error("[v0] Could not read Spotify response body:", e)
+  }
+
+  if (response.status !== 200) {
     throw new Error("Failed to get Spotify recommendations")
   }
 
-  const data = await response.json()
+  let data
+  try {
+    data = JSON.parse(responseBody ?? "")
+  } catch (e) {
+    console.error("[v0] Could not parse Spotify response JSON:", e)
+    throw new Error("Failed to parse Spotify recommendations response")
+  }
 
   return data.tracks.map((track: any) => ({
     name: track.name,

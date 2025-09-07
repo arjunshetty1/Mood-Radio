@@ -1,4 +1,4 @@
-# AI Mood Radio 🎵
+# Mood Radio
 
 Transform your vibes into personalized playlists using AI-powered music discovery.
 
@@ -34,4 +34,3 @@ Transform your vibes into personalized playlists using AI-powered music discover
 - **Frontend**: Next.js, React, Tailwind CSS
 - **AI**: Groq (for vibe-to-genre mapping)
 - **Music**: Spotify Web API
-- **Styling**: Mobile-first responsive design
